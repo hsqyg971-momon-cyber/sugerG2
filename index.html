@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>クリックで表情が変わるモモンガアプリ</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body {
+      background: radial-gradient(circle at center, #fff9e6 0%, #f7ecd0 100%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', sans-serif;
+      overflow: hidden;
+      padding: 16px;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      max-width: 540px;
+      width: 100%;
+    }
+    .header {
+      text-align: center;
+    }
+    .header h1 {
+      font-size: 1.4rem;
+      color: #6d4c41;
+      margin-bottom: 4px;
+    }
+    .header p {
+      font-size: 0.9rem;
+      color: #8d6e63;
+    }
+    .canvas-wrapper {
+      position: relative;
+      background: #ffffff;
+      border-radius: 28px;
+      box-shadow: 0 12px 30px rgba(109, 76, 65, 0.15);
+      border: 4px solid #fff;
+      overflow: hidden;
+      cursor: pointer;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+      width: 100%;
+    }
+    .btn {
+      background: #ffffff;
+      border: 2px solid #deb887;
+      color: #6d4c41;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-weight: bold;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    .btn:hover {
+      background: #deb887;
+      color: #fff;
+      transform: translateY(-2px);
+    }
+    .btn:active {
+      transform: translateY(1px);
+    }
+    .status-badge {
+      font-size: 0.85rem;
+      color: #a1887f;
+      background: rgba(255,255,255,0.7);
+      padding: 4px 12px;
+      border-radius: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="header">
+      <h1>モモンガをタップしてみてね！</h1>
+      <p>タップするたびに色んな表情やアクションを見せてくれます</p>
+    </div>
+
+    <div class="canvas-wrapper" id="canvasWrapper">
+      <canvas id="appCanvas" width="500" height="500"></canvas>
+    </div>
+
+    <div class="status-badge" id="currentMoodText">状態: いつものモモンガ</div>
+
+    <!-- 表情を直接選べるボタン群 -->
+    <div class="controls">
+      <button class="btn" onclick="triggerAction('joy')">😄 よろこび</button>
+      <button class="btn" onclick="triggerAction('wink')">😉 ウインク</button>
+      <button class="btn" onclick="triggerAction('surprise')">😲 びっくり</button>
+      <button class="btn" onclick="triggerAction('sleepy')">😴 すやすや</button>
+      <button class="btn" onclick="triggerAction('yum')">🌰 モグモグ</button>
+      <button class="btn" onclick="triggerAction('random')">🎲 ランダム</button>
+    </div>
+  </div>
+
+  <script>
+    // --- 画像設定 ---
+    // 先ほど生成した表情画像（同一フォルダに配置するか、パスを合わせてください）
+    // ※画像が見つからない場合は、自動的にベクター（イラスト風Canvasパス）で代用描画されます。
+    const IMAGE_SOURCES = {
+      default:  'モモンガのシンプル画像.png',
+      joy:      'watermarked_img_11659097310091143464.jpg',
+      wink:     'watermarked_img_3658229159282448725.jpg',
+      surprise: 'watermarked_img_7526835189544075245.jpg',
+      sleepy:   'watermarked_img_14112581727986664226.jpg',
+      yum:      'watermarked_img_17334751345675190069.jpg'
+    };
+
+    const MOOD_NAMES = {
+      default:  'いつものモモンガ',
+      joy:      '大喜び！（キラキラ＆ハート）',
+      wink:     'ウインク（ごきげんメロディ♪）',
+      surprise: 'びっくり！（大ジャンプ）',
+      sleepy:   'すやすや…（お昼寝中）',
+      yum:      'モグモグ！（どんぐりタイム）'
+    };
+
+    // 画像オブジェクトの事前読み込み
+    const images = {};
+    const loadedStatus = {};
+    for (const [key, src] of Object.entries(IMAGE_SOURCES)) {
+      const img = new Image();
+      img.src = src;
+      img.onload = () => { loadedStatus[key] = true; };
+      img.onerror = () => { loadedStatus[key] = false; };
+      images[key] = img;
+    }
+
+    // --- Canvas & アプリ状態管理 ---
+    const canvas = document.getElementById('appCanvas');
+    const ctx = canvas.getContext('2d');
+    const wrapper = document.getElementById('canvasWrapper');
+    const moodBadge = document.getElementById('currentMoodText');
+
+    let currentMood = 'default';
+    let moodTimer = 0;          // 表情の持続時間
+    const MOOD_DURATION = 120;  // 約2秒間（60fps換算）
+
+    // キャラクタートランスフォーム
+    let anim = {
+      scaleX: 1,
+      scaleY: 1,
+      offsetY: 0,
+      offsetX: 0,
+      rotation: 0
+    };
+
+    // パーティクル配列
+    let particles = [];
+
+    // --- クリック/タップ判定 ---
+    wrapper.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      triggerAction('random');
+    });
+
+    // 表情・アクションのトリガー関数
+    function triggerAction(type) {
+      const moods = ['joy', 'wink', 'surprise', 'sleepy', 'yum'];
+      if (type === 'random') {
+        // 現在と違う表情をランダム選択
+        const candidates = moods.filter(m => m !== currentMood);
+        currentMood = candidates[Math.floor(Math.random() * candidates.length)];
+      } else {
+        currentMood = type;
+      }
+
+      moodTimer = MOOD_DURATION;
+      moodBadge.textContent = '状態: ' + MOOD_NAMES[currentMood];
+
+      // 表情に応じたパーティクル生成
+      createParticlesForMood(currentMood);
+    }
+
+    // --- パーティクル生成 ---
+    function createParticlesForMood(mood) {
+      const count = mood === 'surprise' ? 12 : 18;
+      for (let i = 0; i < count; i++) {
+        let text = '✨';
+        if (mood === 'joy') text = ['💖', '✨', '🌸', '⭐'][Math.floor(Math.random() * 4)];
+        if (mood === 'wink') text = ['🎵', '🎶', '✨', '💛'][Math.floor(Math.random() * 4)];
+        if (mood === 'surprise') text = ['❗', '💦', '💥', '❓'][Math.floor(Math.random() * 4)];
+        if (mood === 'sleepy') text = ['💤', 'Zzz', '🫧', '✨'][Math.floor(Math.random() * 4)];
+        if (mood === 'yum') text = ['🌰', '✨', '💛', '🍂'][Math.floor(Math.random() * 4)];
+
+        const angle = (Math.PI * 2 * i) / count + (Math.random() * 0.4 - 0.2);
+        const speed = 2 + Math.random() * 5;
+
+        particles.push({
+          x: 250 + (Math.random() * 60 - 30),
+          y: 220 + (Math.random() * 40 - 20),
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - (mood === 'surprise' ? 4 : 1),
+          text: text,
+          size: 20 + Math.random() * 16,
+          alpha: 1.0,
+          fade: 0.015 + Math.random() * 0.01,
+          rot: (Math.random() - 0.5) * 0.3
+        });
+      }
+    }
+
+    // --- アニメーション計算 ---
+    function updateAnimation() {
+      if (moodTimer > 0) {
+        moodTimer--;
+        const progress = (MOOD_DURATION - moodTimer) / MOOD_DURATION;
+
+        // モーションのイージング設定
+        switch (currentMood) {
+          case 'joy': // ポヨンポヨンと喜ぶバウンス
+            anim.offsetY = -Math.abs(Math.sin(progress * Math.PI * 4)) * 35;
+            anim.scaleY = 1 + Math.sin(progress * Math.PI * 4) * 0.12;
+            anim.scaleX = 1 - Math.sin(progress * Math.PI * 4) * 0.08;
+            anim.rotation = Math.sin(progress * Math.PI * 4) * 0.04;
+            break;
+
+          case 'wink': // 左右に小首を傾げる
+            anim.offsetY = -Math.sin(progress * Math.PI) * 15;
+            anim.scaleX = 1 + Math.sin(progress * Math.PI * 2) * 0.05;
+            anim.scaleY = 1 - Math.sin(progress * Math.PI * 2) * 0.05;
+            anim.rotation = Math.sin(progress * Math.PI * 3) * 0.1;
+            break;
+
+          case 'surprise': // 高く素早く飛び跳ねてビクッとする
+            if (progress < 0.4) {
+              const jump = Math.sin((progress / 0.4) * Math.PI);
+              anim.offsetY = -jump * 65;
+              anim.scaleY = 1 + jump * 0.2;
+              anim.scaleX = 1 - jump * 0.15;
+            } else {
+              // 着地後の震え
+              const shake = (1 - progress) / 0.6;
+              anim.offsetY = 0;
+              anim.offsetX = Math.sin(progress * 40) * 4 * shake;
+              anim.scaleX = 1;
+              anim.scaleY = 1;
+            }
+            break;
+
+          case 'sleepy': // ゆっくり沈み込んでウトウト
+            anim.offsetY = Math.sin(progress * Math.PI * 2) * 12 + 6;
+            anim.scaleY = 0.96 + Math.sin(progress * Math.PI * 2) * 0.04;
+            anim.scaleX = 1.04 - Math.sin(progress * Math.PI * 2) * 0.04;
+            anim.rotation = Math.sin(progress * Math.PI) * 0.03;
+            break;
+
+          case 'yum': // ほっぺを膨らませて小刻みに咀嚼
+            anim.offsetY = -Math.abs(Math.sin(progress * Math.PI * 6)) * 12;
+            anim.scaleX = 1.05 + Math.sin(progress * Math.PI * 8) * 0.04;
+            anim.scaleY = 0.98 - Math.sin(progress * Math.PI * 8) * 0.04;
+            anim.rotation = Math.sin(progress * Math.PI * 6) * 0.03;
+            break;
+        }
+
+        // 時間が切れたらデフォルトへ戻る
+        if (moodTimer === 0) {
+          currentMood = 'default';
+          moodBadge.textContent = '状態: ' + MOOD_NAMES[currentMood];
+        }
+      } else {
+        // アイドル状態（呼吸のような自然なゆらぎ）
+        const idle = Date.now() / 800;
+        anim.offsetY = Math.sin(idle) * 4;
+        anim.offsetX = 0;
+        anim.scaleX = 1 + Math.sin(idle) * 0.015;
+        anim.scaleY = 1 - Math.sin(idle) * 0.015;
+        anim.rotation = 0;
+      }
+
+      // パーティクル更新
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.08; // 重力
+        p.alpha -= p.fade;
+        if (p.alpha <= 0) {
+          particles.splice(i, 1);
+        }
+      }
+    }
+
+    // --- 描画処理 ---
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 背景の柔らかな円
+      ctx.fillStyle = '#fff4db';
+      ctx.beginPath();
+      ctx.arc(250, 270, 185, 0, Math.PI * 2);
+      ctx.fill();
+
+      // モモンガの足元に影を描画
+      ctx.save();
+      ctx.fillStyle = 'rgba(109, 76, 65, 0.12)';
+      const shadowScale = (anim.scaleX || 1) * (1 - Math.min(0.5, Math.abs(anim.offsetY) / 100));
+      ctx.beginPath();
+      ctx.ellipse(250, 435, 120 * shadowScale, 22 * shadowScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // モモンガ本体の描画（トランスフォーム適用）
+      ctx.save();
+      ctx.translate(250 + (anim.offsetX || 0), 250 + anim.offsetY);
+      ctx.rotate(anim.rotation);
+      ctx.scale(anim.scaleX, anim.scaleY);
+
+      const targetImg = images[currentMood];
+      // 画像が読み込めていれば画像を描画、未配置ならフォールバック描画
+      if (loadedStatus[currentMood] && targetImg && targetImg.complete && targetImg.naturalWidth !== 0) {
+        ctx.drawImage(targetImg, -210, -210, 420, 420);
+      } else {
+        drawFallbackCharacter(currentMood);
+      }
+      ctx.restore();
+
+      // パーティクルの描画（最前面）
+      ctx.save();
+      for (const p of particles) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, p.alpha);
+        ctx.font = `${p.size}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.translate(p.x, p.y);
+        ctx.fillText(p.text, 0, 0);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    // --- 画像未読み込み時のフォールバックベクター描画 ---
+    function drawFallbackCharacter(mood) {
+      // 体と輪郭
+      ctx.fillStyle = '#b77d46';
+      ctx.strokeStyle = '#5a3419';
+      ctx.lineWidth = 9;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // しっぽ
+      ctx.beginPath();
+      ctx.arc(120, -10, 65, 0.5, Math.PI * 1.5, true);
+      ctx.fill();
+      ctx.stroke();
+
+      // 耳
+      [-95, 95].forEach(x => {
+        ctx.beginPath();
+        ctx.arc(x, -125, 34, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#f6a297';
+        ctx.beginPath();
+        ctx.arc(x, -125, 20, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#b77d46';
+      });
+
+      // 体
+      ctx.beginPath();
+      ctx.ellipse(0, 40, 150, 140, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // 白いお腹・顔の模様
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.ellipse(0, 70, 115, 95, 0, 0, Math.PI * 2);
+      ctx.ellipse(-55, -20, 50, 65, -0.15, 0, Math.PI * 2);
+      ctx.ellipse(55, -20, 50, 65, 0.15, 0, Math.PI * 2);
+      ctx.fill();
+
+      // ほっぺ
+      ctx.fillStyle = '#ffb3a7';
+      ctx.beginPath();
+      ctx.arc(-80, 5, 20, 0, Math.PI * 2);
+      ctx.arc(80, 5, 20, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 鼻
+      ctx.fillStyle = '#e57b70';
+      ctx.beginPath();
+      ctx.ellipse(0, -15, 11, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 目・口（表情別）
+      ctx.strokeStyle = '#3a2010';
+      ctx.fillStyle = '#3a2010';
+      ctx.lineWidth = 5;
+
+      if (mood === 'joy') {
+        // にっこり目
+        ctx.beginPath();
+        ctx.arc(-55, -35, 18, 1.1 * Math.PI, 1.9 * Math.PI);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(55, -35, 18, 1.1 * Math.PI, 1.9 * Math.PI);
+        ctx.stroke();
+        // 開いた口
+        ctx.fillStyle = '#d32f2f';
+        ctx.beginPath();
+        ctx.arc(0, 0, 14, 0, Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      } else if (mood === 'wink') {
+        // 左目ぱっちり、右目ウィンク
+        ctx.beginPath();
+        ctx.arc(-55, -35, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(55, -35, 18, 1.1 * Math.PI, 1.9 * Math.PI);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, -2, 10, 0.2, Math.PI - 0.2);
+        ctx.stroke();
+      } else if (mood === 'surprise') {
+        // まん丸見開き目
+        ctx.beginPath();
+        ctx.arc(-55, -35, 22, 0, Math.PI * 2);
+        ctx.arc(55, -35, 22, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(-50, -42, 6, 0, Math.PI * 2);
+        ctx.arc(60, -42, 6, 0, Math.PI * 2);
+        ctx.fill();
+        // まん丸な口
+        ctx.fillStyle = '#4a2612';
+        ctx.beginPath();
+        ctx.ellipse(0, 10, 10, 16, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (mood === 'sleepy') {
+        // 閉じた目
+        ctx.beginPath();
+        ctx.moveTo(-70, -32); ctx.lineTo(-40, -32);
+        ctx.moveTo(40, -32); ctx.lineTo(70, -32);
+        ctx.stroke();
+        // 小さな口
+        ctx.beginPath();
+        ctx.arc(0, -4, 6, 0, Math.PI);
+        ctx.stroke();
+      } else if (mood === 'yum') {
+        // もぐもぐ目＆どんぐり
+        ctx.beginPath();
+        ctx.arc(-55, -35, 16, 1.1 * Math.PI, 1.9 * Math.PI);
+        ctx.arc(55, -35, 16, 1.1 * Math.PI, 1.9 * Math.PI);
+        ctx.stroke();
+        // どんぐり
+        ctx.fillStyle = '#8d5524';
+        ctx.beginPath();
+        ctx.ellipse(0, 35, 24, 28, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        // デフォルト（くりくりおめめ）
+        ctx.beginPath();
+        ctx.arc(-55, -35, 18, 0, Math.PI * 2);
+        ctx.arc(55, -35, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(-60, -42, 6, 0, Math.PI * 2);
+        ctx.arc(50, -42, 6, 0, Math.PI * 2);
+        ctx.fill();
+        // 口
+        ctx.beginPath();
+        ctx.arc(-7, -4, 7, 0, Math.PI);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(7, -4, 7, 0, Math.PI);
+        ctx.stroke();
+      }
+    }
+
+    // --- メインループ ---
+    function loop() {
+      updateAnimation();
+      draw();
+      requestAnimationFrame(loop);
+    }
+    loop();
+  </script>
+</body>
+</html>
